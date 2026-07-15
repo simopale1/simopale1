@@ -4,17 +4,18 @@ Idee e prossimi passi per far crescere CallScribe.
 
 ## ✅ Fatto (MVP)
 - Trascrizione live via Web Speech API (IT/EN + altre lingue)
+- **Audio della call con Whisper in locale** (transformers.js): cattura la voce
+  degli altri anche con le cuffie, senza cavi virtuali e senza chiavi API
+- VAD (voice activity detection) per segmentare gli interventi
 - Momenti chiave, appunti, timer, statistiche
-- Esportazione `.md` / `.txt`, copia, salvataggio automatico locale
+- Esportazione `.md` / `.txt` (con etichetta sorgente), copia, salvataggio locale
 - Tema chiaro/scuro, scorciatoie da tastiera
 
 ## 🔜 Prossimo
-- [ ] **Backend Whisper / Deepgram**: streaming dell'audio della scheda
-      (`getDisplayMedia`) per catturare entrambi i lati della call senza cavi
-      virtuali e con precisione maggiore.
-- [ ] **Modello locale (offline)**: trascrizione 100% in-browser con
-      `transformers.js` / `whisper.cpp` WASM — nessun dato esce dal dispositivo.
-- [ ] **Diarizzazione**: distinguere gli interlocutori ("Speaker 1", "Speaker 2").
+- [ ] **Modello 100% offline**: includere i pesi del modello (o cache-first PWA)
+      per non dipendere dalla CDN.
+- [ ] **Diarizzazione**: distinguere più interlocutori sul lato "call".
+- [ ] **Backend opzionale** (Whisper/Deepgram lato server) per dispositivi deboli.
 - [ ] **Riassunto automatico** e action items via LLM a fine call.
 - [ ] **Ricerca** nella trascrizione.
 - [ ] **Cronologia sessioni** (più call salvate, non solo l'ultima).

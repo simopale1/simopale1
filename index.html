@@ -28,7 +28,7 @@
   <!-- Browser non supportato -->
   <div id="unsupported" class="banner banner-error hidden">
     <strong>Browser non supportato.</strong>
-    Questo browser non offre la Web Speech API. Usa <b>Google Chrome</b> o <b>Microsoft Edge</b> aggiornati.
+    Usa <b>Google Chrome</b> o <b>Microsoft Edge</b> aggiornati (con WebGPU per l'audio della call).
   </div>
 
   <main class="layout">
@@ -59,12 +59,29 @@
         </div>
       </div>
 
+      <!-- Seconda riga: cattura audio della call (anche con le cuffie, senza cavi) -->
+      <div class="panel-subtoolbar">
+        <button id="btn-call" class="btn btn-call" title="Cattura l'audio della call e trascrivilo in locale con Whisper">
+          🔊 Trascrivi audio call
+        </button>
+        <label class="field">
+          <span class="field-label">Modello Whisper (locale)</span>
+          <select id="model-select">
+            <option value="Xenova/whisper-tiny">Tiny — veloce</option>
+            <option value="Xenova/whisper-base" selected>Base — consigliato</option>
+            <option value="Xenova/whisper-small">Small — preciso</option>
+          </select>
+        </label>
+        <span id="call-status" class="call-status hidden"></span>
+        <span class="subtoolbar-hint">Per le cuffie: condividi la scheda della call e attiva <b>“Condividi audio scheda”</b>.</span>
+      </div>
+
       <div class="transcript-wrap">
         <div id="transcript" class="transcript" aria-live="polite" aria-label="Trascrizione">
           <div id="empty-state" class="empty-state">
             <div class="empty-icon">💬</div>
-            <p>Premi <b>Avvia</b> e concedi l'accesso al microfono per iniziare a trascrivere.</p>
-            <p class="hint">Suggerimento: metti la call in <b>vivavoce/altoparlanti</b> per catturare anche l'altra persona.</p>
+            <p>Premi <b>Avvia</b> (microfono) o <b>Audio call</b> per iniziare a trascrivere.</p>
+            <p class="hint">Con le <b>cuffie</b>: usa <b>“Audio call”</b> e attiva <b>“Condividi audio scheda”</b> — così senti anche gli altri, senza cavi.</p>
           </div>
         </div>
         <div id="interim" class="interim" aria-live="assertive"></div>
@@ -73,6 +90,8 @@
       <div class="panel-footer">
         <span class="stat" id="word-count">0 parole</span>
         <span class="stat" id="segment-count">0 interventi</span>
+        <span class="legend"><span class="legend-dot mic"></span>🎤 Tu</span>
+        <span class="legend"><span class="legend-dot call"></span>🔊 Call</span>
         <label class="switch-field">
           <input type="checkbox" id="autoscroll" checked />
           <span>Scorrimento automatico</span>

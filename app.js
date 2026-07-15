@@ -1,11 +1,15 @@
 /*
  * CallScribe — Trascrizione live delle call
- * Usa la Web Speech API del browser (nessuna chiave, tutto in locale).
+ *
+ * Due sorgenti audio combinate:
+ *  - 🎤 Microfono  → la tua voce, via Web Speech API (veloce, nativa)
+ *  - 🔊 Audio call → la voce degli altri, catturando l'audio della scheda
+ *                    condivisa e trascrivendolo con Whisper IN LOCALE
+ *                    (transformers.js). Nessun cavo virtuale, nessuna chiave.
  */
 (function () {
   "use strict";
 
-  // ---- Riferimenti DOM ----
   const $ = (id) => document.getElementById(id);
   const el = {
     unsupported: $("unsupported"),
@@ -15,6 +19,9 @@
     btnStart: $("btn-start"),
     btnPause: $("btn-pause"),
     btnStop: $("btn-stop"),
+    btnCall: $("btn-call"),
+    modelSelect: $("model-select"),
+    callStatus: $("call-status"),
     btnHighlight: $("btn-highlight"),
     btnCopy: $("btn-copy"),
     btnExportMd: $("btn-export-md"),
@@ -33,31 +40,33 @@
     toast: $("toast"),
   };
 
-  const STORAGE_KEY = "callscribe.session.v1";
+  const STORAGE_KEY = "callscribe.session.v2";
   const THEME_KEY = "callscribe.theme";
 
-  // ---- Stato ----
+  // ---- Stato microfono (Web Speech) ----
   let recognition = null;
-  let running = false;      // riconoscimento attivo
-  let paused = false;       // pausa richiesta dall'utente
-  let manualStop = false;   // stop richiesto dall'utente (blocca auto-restart)
-  let startTime = null;     // ms all'avvio
-  let elapsedBase = 0;      // secondi accumulati prima dell'ultima pausa
+  let running = false;
+  let paused = false;
+  let manualStop = false;
+
+  // ---- Stato timer ----
+  let startTime = null;
+  let elapsedBase = 0;
   let timerInterval = null;
 
-  /** @type {{time:number, text:string, highlight:boolean}[]} */
+  // ---- Dati sessione ----
+  /** @type {{time:number, text:string, highlight:boolean, source:'mic'|'call'}[]} */
   let segments = [];
   /** @type {{time:number, text:string}[]} */
   let highlights = [];
 
+  const SOURCE_LABEL = { mic: "🎤 Tu", call: "🔊 Call" };
+
   // ============================================================
-  // Inizializzazione riconoscimento vocale
+  // WEB SPEECH API (microfono → la tua voce)
   // ============================================================
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  function isSupported() {
-    return !!SpeechRecognition;
-  }
+  const speechSupported = !!SpeechRecognition;
 
   function buildRecognition() {
     const rec = new SpeechRecognition();
@@ -72,23 +81,19 @@
         const result = event.results[i];
         const text = result[0].transcript.trim();
         if (!text) continue;
-        if (result.isFinal) {
-          addSegment(text);
-        } else {
-          interim += text + " ";
-        }
+        if (result.isFinal) addSegment(text, "mic");
+        else interim += text + " ";
       }
       el.interim.textContent = interim.trim();
     };
 
     rec.onerror = (event) => {
-      // "no-speech" e "aborted" sono normali: lasciamo che onend gestisca il riavvio.
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         toast("Accesso al microfono negato. Controlla i permessi del browser.");
-        hardStop();
+        stopMic();
       } else if (event.error === "audio-capture") {
         toast("Nessun microfono rilevato.");
-        hardStop();
+        stopMic();
       } else if (event.error === "network") {
         toast("Errore di rete nel servizio di riconoscimento.");
       }
@@ -96,13 +101,10 @@
 
     rec.onend = () => {
       el.interim.textContent = "";
-      // La Web Speech API si ferma da sola dopo pause/silenzi:
-      // riavviamo automaticamente finché l'utente non preme Stop/Pausa.
       if (running && !paused && !manualStop) {
         try {
           rec.start();
         } catch (_) {
-          /* start troppo ravvicinato: riprova a breve */
           setTimeout(() => {
             if (running && !paused && !manualStop) {
               try { rec.start(); } catch (_) {}
@@ -111,80 +113,295 @@
         }
       }
     };
-
     return rec;
   }
 
-  // ============================================================
-  // Controlli sessione
-  // ============================================================
-  function start() {
-    if (!isSupported()) return;
+  function startMic() {
+    if (!speechSupported) {
+      toast("La trascrizione del microfono non è supportata su questo browser.");
+      return;
+    }
     if (running && !paused) return;
-
     manualStop = false;
     paused = false;
     running = true;
-
     recognition = buildRecognition();
-    try {
-      recognition.start();
-    } catch (err) {
-      // Già avviato: ignora.
-    }
-
-    if (!startTime) startTime = Date.now();
-    startTimer();
-    setStatus("recording", "Registrazione…");
-    updateControls();
+    try { recognition.start(); } catch (_) {}
+    ensureSession();
     el.langSelect.disabled = true;
+    refreshUI();
   }
 
-  function pause() {
+  function pauseMic() {
     if (!running || paused) return;
     paused = true;
-    stopTimer();
-    if (recognition) {
-      try { recognition.stop(); } catch (_) {}
-    }
-    setStatus("paused", "In pausa");
-    updateControls();
+    if (recognition) { try { recognition.stop(); } catch (_) {} }
+    refreshUI();
   }
 
-  function resume() {
-    if (!paused) return;
-    start();
-  }
+  function resumeMic() { if (paused) startMic(); }
 
-  function hardStop() {
+  function stopMic() {
     manualStop = true;
     running = false;
     paused = false;
-    stopTimer();
     if (recognition) {
       try { recognition.stop(); } catch (_) {}
       recognition = null;
     }
     el.interim.textContent = "";
-    setStatus("idle", "Fermato");
-    el.langSelect.disabled = false;
-    updateControls();
-  }
-
-  function updateControls() {
-    const active = running && !paused;
-    el.btnStart.disabled = active;
-    el.btnStart.innerHTML = paused
-      ? '<span class="btn-icon">▶</span> Riprendi'
-      : '<span class="btn-icon">●</span> Avvia';
-    el.btnPause.disabled = !active;
-    el.btnStop.disabled = !running && !paused;
-    el.btnHighlight.disabled = !running;
+    if (!callActive) el.langSelect.disabled = false;
+    refreshUI();
   }
 
   // ============================================================
-  // Timer
+  // CATTURA AUDIO CALL (scheda condivisa → Whisper locale)
   // ============================================================
+  let callStream = null;
+  let audioCtx = null;
+  let sourceNode = null;
+  let processor = null;
+  let zeroGain = null;
+  let worker = null;
+  let workerReady = false;
+  let workerLoading = false;
+  let callActive = false;
+
+  const TARGET_RATE = 16000;
+  const VAD_THRESHOLD = 0.006;   // energia RMS minima per considerare "voce"
+  const SILENCE_MS = 700;        // pausa che chiude un intervento
+  const MAX_UTTERANCE_MS = 12000;
+  const MIN_UTTERANCE_MS = 400;
+
+  let inputRate = 48000;
+  let utterance = [];            // Float32Array a 16 kHz accumulati
+  let utteranceMs = 0;
+  let silenceMs = 0;
+  let speaking = false;
+  let segId = 0;
+
+  // Frasi tipiche "allucinate" da Whisper su silenzio/rumore: da scartare.
+  const HALLUCINATIONS = new Set([
+    "thank you.", "thanks for watching!", "you", ".", "grazie.",
+    "sottotitoli e revisione a cura di qtss", "sottotitoli creati dalla comunità amara.org",
+  ]);
+
+  function whisperLanguage() {
+    const code = el.langSelect.value.slice(0, 2);
+    return {
+      it: "italian", en: "english", es: "spanish",
+      fr: "french", de: "german",
+    }[code] || null;
+  }
+
+  function initWorker() {
+    if (worker) return;
+    worker = new Worker("whisper-worker.js", { type: "module" });
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "progress") {
+        if (msg.data && msg.data.status === "progress" && msg.data.progress != null) {
+          setCallStatus(`Caricamento modello… ${Math.round(msg.data.progress)}%`, "loading");
+        }
+      } else if (msg.type === "info") {
+        // es. fallback WebGPU→WASM
+      } else if (msg.type === "ready") {
+        workerReady = true;
+        workerLoading = false;
+        setCallStatus("Ascolto audio call…", "active");
+      } else if (msg.type === "result") {
+        handleCallResult(msg.text);
+      } else if (msg.type === "error") {
+        console.error("Whisper error:", msg.error);
+        if (workerLoading) {
+          workerLoading = false;
+          setCallStatus("Errore nel caricamento del modello.", "error");
+          toast("Impossibile caricare il modello Whisper.");
+          teardownCall();
+          refreshUI();
+        }
+      }
+    };
+  }
+
+  function handleCallResult(text) {
+    const clean = (text || "").trim();
+    if (!clean) return;
+    const lower = clean.toLowerCase();
+    if (HALLUCINATIONS.has(lower)) return;
+    if (clean.replace(/[^\p{L}\p{N}]/gu, "").length < 2) return; // solo punteggiatura
+    addSegment(clean, "call");
+  }
+
+  async function startCall() {
+    if (callActive) return;
+
+    // 1) Cattura audio della scheda/finestra condivisa.
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") toast("Condivisione annullata.");
+      else toast("Cattura schermo non disponibile: " + (err && err.name || err));
+      return;
+    }
+
+    if (stream.getAudioTracks().length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      toast("Nessun audio catturato. Ricorda di attivare “Condividi audio scheda”.");
+      return;
+    }
+
+    // Il video non serve: lo fermiamo subito per risparmiare risorse.
+    stream.getVideoTracks().forEach((t) => t.stop());
+    callStream = stream;
+
+    // L'utente può fermare la condivisione dalla barra del browser.
+    stream.getAudioTracks()[0].addEventListener("ended", () => {
+      if (callActive) { stopCall(); toast("Condivisione audio terminata."); }
+    });
+
+    // 2) Prepara il modello Whisper nel worker.
+    callActive = true;
+    workerReady = false;
+    workerLoading = true;
+    initWorker();
+    setCallStatus("Preparazione modello…", "loading");
+    el.langSelect.disabled = true;
+    refreshUI();
+
+    const device = ("gpu" in navigator) ? "webgpu" : "wasm";
+    worker.postMessage({ type: "load", model: el.modelSelect.value, device });
+
+    // 3) Pipeline audio: cattura → VAD → invio al worker.
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    inputRate = audioCtx.sampleRate;
+    sourceNode = audioCtx.createMediaStreamSource(callStream);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    zeroGain = audioCtx.createGain();
+    zeroGain.gain.value = 0; // evita di riprodurre di nuovo l'audio (niente eco)
+
+    processor.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer.getChannelData(0);
+      const frameMs = (input.length / inputRate) * 1000;
+      const rms = computeRMS(input);
+      const resampled = downsample(input, inputRate, TARGET_RATE);
+
+      if (rms > VAD_THRESHOLD) {
+        speaking = true;
+        silenceMs = 0;
+        utterance.push(resampled);
+        utteranceMs += frameMs;
+      } else if (speaking) {
+        utterance.push(resampled);
+        utteranceMs += frameMs;
+        silenceMs += frameMs;
+        if (silenceMs >= SILENCE_MS) flushUtterance();
+      }
+      if (utteranceMs >= MAX_UTTERANCE_MS) flushUtterance();
+    };
+
+    sourceNode.connect(processor);
+    processor.connect(zeroGain);
+    zeroGain.connect(audioCtx.destination);
+
+    ensureSession();
+  }
+
+  function flushUtterance() {
+    const chunks = utterance;
+    const totalMs = utteranceMs;
+    utterance = [];
+    utteranceMs = 0;
+    silenceMs = 0;
+    speaking = false;
+    if (totalMs < MIN_UTTERANCE_MS || !worker || !workerReady) return;
+
+    let length = 0;
+    for (const c of chunks) length += c.length;
+    const audio = new Float32Array(length);
+    let offset = 0;
+    for (const c of chunks) { audio.set(c, offset); offset += c.length; }
+
+    worker.postMessage(
+      { type: "transcribe", audio, language: whisperLanguage(), id: ++segId },
+      [audio.buffer]
+    );
+  }
+
+  function stopCall() {
+    teardownCall();
+    setCallStatus("", "");
+    if (!running && !paused) el.langSelect.disabled = false;
+    refreshUI();
+  }
+
+  function teardownCall() {
+    callActive = false;
+    workerReady = false;
+    workerLoading = false;
+    try { if (processor) processor.disconnect(); } catch (_) {}
+    try { if (sourceNode) sourceNode.disconnect(); } catch (_) {}
+    try { if (zeroGain) zeroGain.disconnect(); } catch (_) {}
+    try { if (audioCtx) audioCtx.close(); } catch (_) {}
+    if (callStream) callStream.getTracks().forEach((t) => t.stop());
+    processor = sourceNode = zeroGain = audioCtx = callStream = null;
+    utterance = [];
+    utteranceMs = silenceMs = 0;
+    speaking = false;
+  }
+
+  function computeRMS(buffer) {
+    let sum = 0;
+    for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+    return Math.sqrt(sum / buffer.length);
+  }
+
+  function downsample(buffer, inRate, outRate) {
+    if (inRate === outRate) return Float32Array.from(buffer);
+    const ratio = inRate / outRate;
+    const newLen = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+      const idx = i * ratio;
+      const i0 = Math.floor(idx);
+      const i1 = Math.min(i0 + 1, buffer.length - 1);
+      const frac = idx - i0;
+      result[i] = buffer[i0] * (1 - frac) + buffer[i1] * frac;
+    }
+    return result;
+  }
+
+  function setCallStatus(text, cls) {
+    el.callStatus.textContent = text;
+    el.callStatus.className = "call-status" + (cls ? " " + cls : "") + (text ? "" : " hidden");
+  }
+
+  // ============================================================
+  // SESSIONE / TIMER
+  // ============================================================
+  function ensureSession() {
+    if (!startTime) startTime = Date.now();
+    syncTimer();
+    refreshUI();
+  }
+
+  function anyActive() {
+    return (running && !paused) || callActive;
+  }
+
+  function syncTimer() {
+    if (anyActive() && !timerInterval) startTimer();
+    else if (!anyActive() && timerInterval) stopTimer();
+  }
+
   function startTimer() {
     stopTimer();
     const anchor = Date.now();
@@ -198,11 +415,7 @@
     if (timerInterval) {
       clearInterval(timerInterval);
       timerInterval = null;
-      // accumula il tempo trascorso
-      if (startTime) {
-        const shown = el.timer.textContent;
-        elapsedBase = parseDuration(shown);
-      }
+      elapsedBase = parseDuration(el.timer.textContent);
     }
   }
 
@@ -220,11 +433,16 @@
     return parts[0] * 60 + parts[1];
   }
 
+  function sessionSeconds() {
+    if (!startTime) return 0;
+    return parseDuration(el.timer.textContent);
+  }
+
   // ============================================================
-  // Segmenti trascrizione
+  // SEGMENTI TRASCRIZIONE
   // ============================================================
-  function addSegment(text) {
-    const seg = { time: sessionSeconds(), text, highlight: false };
+  function addSegment(text, source) {
+    const seg = { time: sessionSeconds(), text, highlight: false, source: source || "mic" };
     segments.push(seg);
     renderSegment(seg, segments.length - 1);
     updateStats();
@@ -232,23 +450,17 @@
   }
 
   function renderSegment(seg, index) {
-    if (el.emptyState) el.emptyState.remove();
+    if (el.emptyState) { el.emptyState.remove(); el.emptyState = null; }
     const div = document.createElement("div");
-    div.className = "segment" + (seg.highlight ? " is-highlight" : "");
+    div.className = "segment src-" + (seg.source || "mic") + (seg.highlight ? " is-highlight" : "");
     div.dataset.index = index;
     div.innerHTML =
-      `<div class="segment-time">${formatDuration(seg.time)}</div>` +
+      `<div class="segment-meta"><span class="src-badge">${SOURCE_LABEL[seg.source] || ""}</span>` +
+      `<span class="segment-time">${formatDuration(seg.time)}</span></div>` +
       `<div class="segment-text"></div>`;
     div.querySelector(".segment-text").textContent = seg.text;
     el.transcript.appendChild(div);
-    if (el.autoscroll.checked) {
-      el.transcript.scrollTop = el.transcript.scrollHeight;
-    }
-  }
-
-  function sessionSeconds() {
-    if (!startTime) return 0;
-    return parseDuration(el.timer.textContent);
+    if (el.autoscroll.checked) el.transcript.scrollTop = el.transcript.scrollHeight;
   }
 
   function updateStats() {
@@ -258,16 +470,14 @@
   }
 
   // ============================================================
-  // Momenti chiave (highlight)
+  // MOMENTI CHIAVE
   // ============================================================
   function markHighlight() {
     const last = segments[segments.length - 1];
     const text = last ? last.text : "(momento segnato)";
     if (last) last.highlight = true;
-    const hl = { time: sessionSeconds(), text };
-    highlights.push(hl);
+    highlights.push({ time: sessionSeconds(), text });
     renderHighlights();
-    // aggiorna stile del segmento
     if (last) {
       const node = el.transcript.querySelector(`.segment[data-index="${segments.length - 1}"]`);
       if (node) node.classList.add("is-highlight");
@@ -305,7 +515,7 @@
   }
 
   // ============================================================
-  // Esportazione
+  // ESPORTAZIONE
   // ============================================================
   function buildPlainText() {
     const lines = [];
@@ -316,7 +526,8 @@
     lines.push("");
     lines.push("=== TRASCRIZIONE ===");
     segments.forEach((s) => {
-      lines.push(`[${formatDuration(s.time)}]${s.highlight ? " ⭐" : ""} ${s.text}`);
+      const src = SOURCE_LABEL[s.source] || "";
+      lines.push(`[${formatDuration(s.time)}] ${src}${s.highlight ? " ⭐" : ""}: ${s.text}`);
     });
     if (highlights.length) {
       lines.push("");
@@ -344,8 +555,9 @@
     }
     lines.push("## 💬 Trascrizione\n");
     segments.forEach((s) => {
+      const src = SOURCE_LABEL[s.source] || "";
       const mark = s.highlight ? " ⭐" : "";
-      lines.push(`**\`${formatDuration(s.time)}\`**${mark} ${s.text}\n`);
+      lines.push(`**\`${formatDuration(s.time)}\` ${src}**${mark}: ${s.text}\n`);
     });
     if (el.notes.value.trim()) {
       lines.push("## 📝 Appunti\n");
@@ -371,7 +583,7 @@
   }
 
   // ============================================================
-  // Persistenza (localStorage)
+  // PERSISTENZA
   // ============================================================
   function persist() {
     try {
@@ -387,20 +599,16 @@
 
   function restore() {
     let data;
-    try {
-      data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    } catch (_) { return; }
+    try { data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch (_) { return; }
     if (!data || !Array.isArray(data.segments) || data.segments.length === 0) return;
-
-    segments = data.segments;
+    segments = data.segments.map((s) => ({ source: "mic", highlight: false, ...s }));
     highlights = data.highlights || [];
     el.notes.value = data.notes || "";
     el.timer.textContent = data.elapsed || "00:00";
     elapsedBase = parseDuration(el.timer.textContent);
     if (data.lang) el.langSelect.value = data.lang;
-    startTime = Date.now(); // consente nuovi timestamp coerenti
-
-    if (el.emptyState) el.emptyState.remove();
+    startTime = Date.now();
+    if (el.emptyState) { el.emptyState.remove(); el.emptyState = null; }
     segments.forEach((s, i) => renderSegment(s, i));
     renderHighlights();
     updateStats();
@@ -409,7 +617,8 @@
 
   function clearSession() {
     if (!confirm("Cancellare l'intera sessione (trascrizione, momenti e appunti)?")) return;
-    hardStop();
+    stopMic();
+    stopCall();
     segments = [];
     highlights = [];
     startTime = null;
@@ -419,8 +628,8 @@
     el.transcript.innerHTML =
       '<div id="empty-state" class="empty-state">' +
       '<div class="empty-icon">💬</div>' +
-      "<p>Premi <b>Avvia</b> e concedi l'accesso al microfono per iniziare a trascrivere.</p>" +
-      '<p class="hint">Suggerimento: metti la call in <b>vivavoce/altoparlanti</b> per catturare anche l\'altra persona.</p>' +
+      "<p>Premi <b>Avvia</b> (microfono) o <b>Audio call</b> per iniziare a trascrivere.</p>" +
+      '<p class="hint">Con le cuffie usa <b>“Audio call”</b> e attiva <b>“Condividi audio scheda”</b>.</p>' +
       "</div>";
     el.emptyState = $("empty-state");
     renderHighlights();
@@ -430,11 +639,35 @@
   }
 
   // ============================================================
-  // UI helpers
+  // UI
   // ============================================================
   function setStatus(cls, text) {
     el.statusPill.className = "status-pill " + cls;
     el.statusText.textContent = text;
+  }
+
+  function refreshUI() {
+    // Stato globale
+    if (anyActive()) setStatus("recording", "Registrazione…");
+    else if (paused) setStatus("paused", "In pausa");
+    else setStatus("idle", startTime ? "Fermato" : "Pronto");
+
+    // Bottoni microfono
+    const micOn = running && !paused;
+    el.btnStart.disabled = micOn || !speechSupported;
+    el.btnStart.innerHTML = paused
+      ? '<span class="btn-icon">▶</span> Riprendi'
+      : '<span class="btn-icon">●</span> Avvia';
+    el.btnPause.disabled = !micOn;
+    el.btnStop.disabled = !running && !paused;
+
+    // Bottone audio call
+    el.btnCall.classList.toggle("active", callActive);
+    el.btnCall.textContent = callActive ? "⏹ Ferma audio call" : "🔊 Trascrivi audio call";
+    el.modelSelect.disabled = callActive;
+
+    el.btnHighlight.disabled = !anyActive() && segments.length === 0;
+    syncTimer();
   }
 
   let toastTimer = null;
@@ -442,16 +675,14 @@
     el.toast.textContent = msg;
     el.toast.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.toast.classList.add("hidden"), 2600);
+    toastTimer = setTimeout(() => el.toast.classList.add("hidden"), 2800);
   }
 
   async function copyAll() {
     try {
       await navigator.clipboard.writeText(buildPlainText());
       toast("Copiato negli appunti");
-    } catch (_) {
-      toast("Copia non riuscita");
-    }
+    } catch (_) { toast("Copia non riuscita"); }
   }
 
   function applyTheme(theme) {
@@ -465,10 +696,9 @@
   }
 
   // ============================================================
-  // Bootstrap
+  // BOOTSTRAP
   // ============================================================
   function init() {
-    // Tema
     let savedTheme;
     try { savedTheme = localStorage.getItem(THEME_KEY); } catch (_) {}
     if (!savedTheme) {
@@ -476,27 +706,36 @@
     }
     applyTheme(savedTheme);
 
-    if (!isSupported()) {
+    // Cattura audio call richiede getDisplayMedia; il microfono richiede Web Speech.
+    const displaySupported = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+    if (!speechSupported && !displaySupported) {
       el.unsupported.classList.remove("hidden");
       el.btnStart.disabled = true;
+      el.btnCall.disabled = true;
       setStatus("idle", "Non disponibile");
       return;
     }
+    if (!speechSupported) {
+      el.btnStart.disabled = true;
+      el.btnStart.title = "Microfono non supportato: usa “Audio call”.";
+    }
+    if (!displaySupported) {
+      el.btnCall.disabled = true;
+      el.btnCall.title = "Cattura audio scheda non supportata su questo browser.";
+    }
 
     restore();
-    updateControls();
+    refreshUI();
     updateStats();
 
-    // Eventi
-    el.btnStart.addEventListener("click", () => (paused ? resume() : start()));
-    el.btnPause.addEventListener("click", pause);
-    el.btnStop.addEventListener("click", hardStop);
+    el.btnStart.addEventListener("click", () => (paused ? resumeMic() : startMic()));
+    el.btnPause.addEventListener("click", pauseMic);
+    el.btnStop.addEventListener("click", stopMic);
+    el.btnCall.addEventListener("click", () => (callActive ? stopCall() : startCall()));
     el.btnHighlight.addEventListener("click", markHighlight);
     el.btnCopy.addEventListener("click", copyAll);
-    el.btnExportTxt.addEventListener("click", () =>
-      download(timestampName() + ".txt", buildPlainText()));
-    el.btnExportMd.addEventListener("click", () =>
-      download(timestampName() + ".md", buildMarkdown()));
+    el.btnExportTxt.addEventListener("click", () => download(timestampName() + ".txt", buildPlainText()));
+    el.btnExportMd.addEventListener("click", () => download(timestampName() + ".md", buildMarkdown()));
     el.btnClear.addEventListener("click", clearSession);
     el.themeToggle.addEventListener("click", toggleTheme);
     el.notes.addEventListener("input", persist);
@@ -506,18 +745,16 @@
       persist();
     });
 
-    // Scorciatoie da tastiera
     document.addEventListener("keydown", (e) => {
       if (e.target === el.notes) return;
       if (e.code === "Space" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        running && !paused ? pause() : (paused ? resume() : start());
-      } else if (e.key.toLowerCase() === "m" && running) {
+        running && !paused ? pauseMic() : (paused ? resumeMic() : startMic());
+      } else if (e.key.toLowerCase() === "m" && (anyActive() || segments.length)) {
         markHighlight();
       }
     });
 
-    // Salva prima di chiudere
     window.addEventListener("beforeunload", persist);
   }
 

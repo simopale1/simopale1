@@ -12,13 +12,17 @@ appunti ed esportazione in `.txt` / `.md`.
 
 ## ✨ Funzionalità
 
-- **Trascrizione live** con risultati parziali in tempo reale
+- **Due sorgenti audio combinate**:
+  - 🎤 **Microfono** → la tua voce, via Web Speech API (istantanea)
+  - 🔊 **Audio della call** → la voce degli altri, catturando l'audio della
+    scheda condivisa e trascrivendolo con **Whisper in locale** — funziona
+    **anche con le cuffie, senza cavi virtuali e senza chiavi API**
 - **Multilingua**: Italiano, Inglese (US/UK), Spagnolo, Francese, Tedesco
 - **Riavvio automatico** dopo pause e silenzi (la call non si "perde")
 - **⭐ Momenti chiave**: segna al volo i punti importanti (tasto `M`)
 - **📝 Appunti** liberi accanto alla trascrizione
 - **Timer** di durata della sessione + conteggio parole/interventi
-- **Esportazione** in Markdown o testo, oppure copia tutto
+- **Esportazione** in Markdown o testo (con etichetta di chi parla), o copia tutto
 - **Salvataggio automatico** in locale (riprende dopo un refresh)
 - **Tema chiaro/scuro**
 - **Scorciatoie**: `Ctrl/Cmd + Spazio` avvia/pausa · `M` segna momento
@@ -46,29 +50,36 @@ python3 -m http.server 8000
 
 ---
 
-## 🔊 Catturare l'audio della call: come funziona davvero
+## 🔊 Catturare l'audio della call (anche con le cuffie, senza cavi)
 
-La Web Speech API del browser trascrive **dal microfono**. Questo significa:
+CallScribe usa **due sorgenti** che puoi attivare insieme:
 
-| Scenario | Cosa viene trascritto |
-|---|---|
-| **Vivavoce / altoparlanti** | La tua voce **e** quella degli altri (il mic riprende l'audio dalle casse) ✅ |
-| **Cuffie / auricolari** | Solo la **tua** voce ❌ (l'altro lato non passa dal microfono) |
+| Sorgente | Cosa trascrive | Tecnologia |
+|---|---|---|
+| 🎤 **Microfono** (pulsante *Avvia*) | La **tua** voce | Web Speech API (istantanea) |
+| 🔊 **Audio call** (pulsante *Trascrivi audio call*) | La voce **degli altri** | Whisper **in locale** nel browser |
 
-### 💡 Catturare *entrambi* i lati anche con le cuffie
+### Come si usa con le cuffie
 
-Per trascrivere sia te che gli altri interlocutori, instrada l'audio del PC verso
-un **microfono virtuale**, così il browser lo "sente" come input:
+1. Premi **🔊 Trascrivi audio call**.
+2. Il browser chiede *cosa condividere*: scegli la **scheda** (o la finestra)
+   della tua call **e spunta “Condividi audio scheda”** (in basso a sinistra).
+3. Al primo utilizzo viene scaricato il modello Whisper (~40–140 MB a seconda
+   della scelta *Tiny / Base / Small*); poi resta **in cache** e parte subito.
+4. Premi anche **Avvia** per trascrivere in contemporanea la tua voce dal microfono.
 
-- **Windows** → [VB-CABLE](https://vb-audio.com/Cable/) (Virtual Audio Cable)
-- **macOS** → [BlackHole](https://existential.audio/blackhole/) o [Loopback](https://rogueamoeba.com/loopback/)
-- **Linux** → `PulseAudio` / `PipeWire` con un *null sink* + *loopback*
+Nessun cavo virtuale, nessun account, nessuna chiave: l'audio della call viene
+elaborato **interamente sul tuo dispositivo**.
 
-Imposta poi quel dispositivo virtuale come microfono predefinito del browser.
+> 💡 **Prestazioni:** con una GPU compatibile il browser usa **WebGPU** (veloce).
+> Altrimenti gira su CPU (WASM): in quel caso scegli il modello **Tiny** per
+> ridurre il ritardo. Consigliati **Chrome/Edge** aggiornati.
 
-> **In arrivo (opzione avanzata):** un backend con Whisper/Deepgram per catturare
-> direttamente l'audio della scheda condivisa e ottenere una precisione maggiore,
-> senza cavi virtuali. Vedi [ROADMAP.md](ROADMAP.md).
+### Alternativa: microfono in vivavoce
+
+Se preferisci non condividere lo schermo, metti la call in
+**vivavoce/altoparlanti** e usa solo il microfono (*Avvia*): il mic riprenderà
+sia te che gli altri dalle casse.
 
 ---
 
@@ -76,14 +87,16 @@ Imposta poi quel dispositivo virtuale come microfono predefinito del browser.
 
 ```
 .
-├── index.html   # interfaccia
-├── styles.css   # stile (tema chiaro/scuro)
-├── app.js       # logica: Web Speech API, sessione, esport, storage
-├── ROADMAP.md   # prossimi passi (backend Whisper, diarizzazione, ecc.)
+├── index.html          # interfaccia
+├── styles.css          # stile (tema chiaro/scuro)
+├── app.js              # logica: sorgenti audio, VAD, sessione, esport, storage
+├── whisper-worker.js   # Web Worker: Whisper locale (transformers.js) per l'audio call
+├── ROADMAP.md          # prossimi passi (diarizzazione, riassunti, ecc.)
 └── README.md
 ```
 
-Nessuna dipendenza, nessun build step: è tutto vanilla JavaScript.
+Nessun build step. L'unica dipendenza è **transformers.js**, caricato al volo da
+CDN solo quando attivi l'audio della call (per il resto è tutto vanilla JS).
 
 ---
 
