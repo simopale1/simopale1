@@ -6,6 +6,8 @@ Idee e prossimi passi per far crescere CallScribe.
 - Trascrizione live via Web Speech API (IT/EN + altre lingue)
 - **Audio della call con Whisper in locale** (transformers.js): cattura la voce
   degli altri anche con le cuffie, senza cavi virtuali e senza chiavi API
+- **Traduzione in tempo reale in locale** (opus-mt): call in un'altra lingua
+  mostrata anche nella tua, sotto ogni frase
 - VAD (voice activity detection) per segmentare gli interventi
 - Momenti chiave, appunti, timer, statistiche
 - Esportazione `.md` / `.txt` (con etichetta sorgente), copia, salvataggio locale
@@ -21,7 +23,7 @@ Idee e prossimi passi per far crescere CallScribe.
 - [ ] **Cronologia sessioni** (più call salvate, non solo l'ultima).
 
 ## 💭 Idee future
-- [ ] Traduzione live (IT ⇄ EN).
+- [ ] Traduzione anche tra coppie senza inglese (pivot it→en→fr).
 - [ ] Integrazione calendario per titolare automaticamente la riunione.
 - [ ] Esportazione verso Notion / Google Docs.
 - [ ] PWA installabile con supporto offline.

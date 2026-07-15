@@ -22,6 +22,8 @@
     btnCall: $("btn-call"),
     modelSelect: $("model-select"),
     callStatus: $("call-status"),
+    translateSelect: $("translate-select"),
+    translateStatus: $("translate-status"),
     btnHighlight: $("btn-highlight"),
     btnCopy: $("btn-copy"),
     btnExportMd: $("btn-export-md"),
@@ -385,6 +387,119 @@
   }
 
   // ============================================================
+  // TRADUZIONE IN TEMPO REALE (locale, opus-mt via transformers.js)
+  // ============================================================
+  let translateWorker = null;
+  let translateReady = false;
+  let translatePair = null;
+
+  // Coppie supportate (ogni lingua ↔ inglese).
+  const OPUS_MODELS = {
+    "en-it": "Xenova/opus-mt-en-it", "it-en": "Xenova/opus-mt-it-en",
+    "en-es": "Xenova/opus-mt-en-es", "es-en": "Xenova/opus-mt-es-en",
+    "en-fr": "Xenova/opus-mt-en-fr", "fr-en": "Xenova/opus-mt-fr-en",
+    "en-de": "Xenova/opus-mt-en-de", "de-en": "Xenova/opus-mt-de-en",
+  };
+
+  function currentPair() {
+    const src = el.langSelect.value.slice(0, 2);
+    const tgt = el.translateSelect.value;
+    if (!tgt || tgt === src) return null;
+    return src + "-" + tgt;
+  }
+
+  function initTranslateWorker() {
+    if (translateWorker) return;
+    translateWorker = new Worker("translate-worker.js", { type: "module" });
+    translateWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "progress") {
+        if (msg.data && msg.data.status === "progress" && msg.data.progress != null) {
+          setTranslateStatus(`Caricamento traduttore… ${Math.round(msg.data.progress)}%`, "loading");
+        }
+      } else if (msg.type === "ready") {
+        if (msg.pair === translatePair) {
+          translateReady = true;
+          setTranslateStatus(`🌐 Traduzione attiva (${translatePair})`, "active");
+          translateMissing();
+        }
+      } else if (msg.type === "result") {
+        applyTranslation(msg.id, msg.text);
+      } else if (msg.type === "error") {
+        console.error("Translate error:", msg.error);
+        setTranslateStatus("Errore traduttore.", "error");
+      }
+    };
+  }
+
+  // force = true → ricancella e ritraduce tutto (cambio lingua/target).
+  // force = false → traduce solo i segmenti ancora senza traduzione (ripristino).
+  function setupTranslation(force) {
+    const pair = currentPair();
+    if (!pair) {
+      translatePair = null;
+      translateReady = false;
+      if (force) clearAllTranslations();
+      setTranslateStatus("", "");
+      return;
+    }
+    const model = OPUS_MODELS[pair];
+    if (!model) {
+      toast(`Traduzione ${pair} non ancora supportata (per ora ogni lingua ↔ inglese).`);
+      el.translateSelect.value = "";
+      setTranslateStatus("", "");
+      return;
+    }
+    if (force) clearAllTranslations();
+    const changed = pair !== translatePair;
+    translatePair = pair;
+    if (translateReady && !changed) { translateMissing(); return; }
+
+    translateReady = false;
+    initTranslateWorker();
+    setTranslateStatus("Preparazione traduttore…", "loading");
+    translateWorker.postMessage({ type: "load", model, pair });
+  }
+
+  function requestTranslation(index) {
+    if (!translatePair || !translateReady) return;
+    const seg = segments[index];
+    if (!seg || seg.translation) return;
+    translateWorker.postMessage({ type: "translate", id: index, text: seg.text, pair: translatePair });
+  }
+
+  function translateMissing() {
+    segments.forEach((s, i) => { if (!s.translation) requestTranslation(i); });
+  }
+
+  function applyTranslation(index, text) {
+    const seg = segments[index];
+    if (!seg || !text) return;
+    seg.translation = text;
+    const node = el.transcript.querySelector(`.segment[data-index="${index}"]`);
+    if (node) {
+      let t = node.querySelector(".segment-translation");
+      if (!t) {
+        t = document.createElement("div");
+        t.className = "segment-translation";
+        node.appendChild(t);
+      }
+      t.textContent = text;
+    }
+    persist();
+  }
+
+  function clearAllTranslations() {
+    segments.forEach((s) => { delete s.translation; });
+    el.transcript.querySelectorAll(".segment-translation").forEach((n) => n.remove());
+  }
+
+  function setTranslateStatus(text, cls) {
+    el.translateStatus.textContent = text;
+    el.translateStatus.className = "call-status" + (cls ? " " + cls : "") + (text ? "" : " hidden");
+  }
+
+  // ============================================================
   // SESSIONE / TIMER
   // ============================================================
   function ensureSession() {
@@ -447,6 +562,7 @@
     renderSegment(seg, segments.length - 1);
     updateStats();
     persist();
+    requestTranslation(segments.length - 1);
   }
 
   function renderSegment(seg, index) {
@@ -459,6 +575,12 @@
       `<span class="segment-time">${formatDuration(seg.time)}</span></div>` +
       `<div class="segment-text"></div>`;
     div.querySelector(".segment-text").textContent = seg.text;
+    if (seg.translation) {
+      const t = document.createElement("div");
+      t.className = "segment-translation";
+      t.textContent = seg.translation;
+      div.appendChild(t);
+    }
     el.transcript.appendChild(div);
     if (el.autoscroll.checked) el.transcript.scrollTop = el.transcript.scrollHeight;
   }
@@ -528,6 +650,7 @@
     segments.forEach((s) => {
       const src = SOURCE_LABEL[s.source] || "";
       lines.push(`[${formatDuration(s.time)}] ${src}${s.highlight ? " ⭐" : ""}: ${s.text}`);
+      if (s.translation) lines.push(`            🌐 ${s.translation}`);
     });
     if (highlights.length) {
       lines.push("");
@@ -557,7 +680,9 @@
     segments.forEach((s) => {
       const src = SOURCE_LABEL[s.source] || "";
       const mark = s.highlight ? " ⭐" : "";
-      lines.push(`**\`${formatDuration(s.time)}\` ${src}**${mark}: ${s.text}\n`);
+      lines.push(`**\`${formatDuration(s.time)}\` ${src}**${mark}: ${s.text}`);
+      if (s.translation) lines.push(`> 🌐 ${s.translation}`);
+      lines.push("");
     });
     if (el.notes.value.trim()) {
       lines.push("## 📝 Appunti\n");
@@ -592,6 +717,7 @@
         notes: el.notes.value,
         elapsed: el.timer.textContent,
         lang: el.langSelect.value,
+        translate: el.translateSelect.value,
         savedAt: Date.now(),
       }));
     } catch (_) {}
@@ -607,11 +733,13 @@
     el.timer.textContent = data.elapsed || "00:00";
     elapsedBase = parseDuration(el.timer.textContent);
     if (data.lang) el.langSelect.value = data.lang;
+    if (data.translate) el.translateSelect.value = data.translate;
     startTime = Date.now();
     if (el.emptyState) { el.emptyState.remove(); el.emptyState = null; }
     segments.forEach((s, i) => renderSegment(s, i));
     renderHighlights();
     updateStats();
+    if (el.translateSelect.value) setupTranslation(false);
     toast("Sessione precedente ripristinata");
   }
 
@@ -622,6 +750,7 @@
     segments = [];
     highlights = [];
     startTime = null;
+    setTranslateStatus("", "");
     elapsedBase = 0;
     el.notes.value = "";
     el.timer.textContent = "00:00";
@@ -742,6 +871,12 @@
 
     el.langSelect.addEventListener("change", () => {
       if (recognition) recognition.lang = el.langSelect.value;
+      if (el.translateSelect.value) setupTranslation(true);
+      persist();
+    });
+
+    el.translateSelect.addEventListener("change", () => {
+      setupTranslation(true);
       persist();
     });
 

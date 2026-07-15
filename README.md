@@ -17,6 +17,9 @@ appunti ed esportazione in `.txt` / `.md`.
   - 🔊 **Audio della call** → la voce degli altri, catturando l'audio della
     scheda condivisa e trascrivendolo con **Whisper in locale** — funziona
     **anche con le cuffie, senza cavi virtuali e senza chiavi API**
+- **🌐 Traduzione in tempo reale** (locale): traduci la call — es. una riunione
+  in **inglese** mostrata anche in **italiano** sotto ogni frase — senza chiavi
+  né server (modelli Helsinki-NLP *opus-mt*)
 - **Multilingua**: Italiano, Inglese (US/UK), Spagnolo, Francese, Tedesco
 - **Riavvio automatico** dopo pause e silenzi (la call non si "perde")
 - **⭐ Momenti chiave**: segna al volo i punti importanti (tasto `M`)
@@ -83,14 +86,34 @@ sia te che gli altri dalle casse.
 
 ---
 
+## 🌐 Traduzione in tempo reale
+
+Per seguire una call in un'altra lingua nella tua:
+
+1. Imposta **Lingua** = lingua parlata nella call (es. *English*).
+2. Imposta **🌐 Traduci in** = la tua lingua (es. *Italiano*).
+3. Avvia il microfono e/o l'audio della call: sotto ogni frase comparirà la
+   **traduzione** (icona 🌐).
+
+Al primo uso si scarica un piccolo modello di traduzione (~75 MB per coppia di
+lingue), poi resta in cache. Tutto avviene **in locale**, nessun dato esce dal
+dispositivo. Le traduzioni sono incluse anche nei file esportati.
+
+> **Coppie supportate:** ogni lingua **↔ inglese**
+> (en↔it, en↔es, en↔fr, en↔de). Le combinazioni senza inglese (es. it→fr)
+> non sono ancora disponibili.
+
+---
+
 ## 🗂️ Struttura del progetto
 
 ```
 .
 ├── index.html          # interfaccia
 ├── styles.css          # stile (tema chiaro/scuro)
-├── app.js              # logica: sorgenti audio, VAD, sessione, esport, storage
+├── app.js              # logica: sorgenti audio, VAD, traduzione, esport, storage
 ├── whisper-worker.js   # Web Worker: Whisper locale (transformers.js) per l'audio call
+├── translate-worker.js # Web Worker: traduzione locale (opus-mt) in tempo reale
 ├── ROADMAP.md          # prossimi passi (diarizzazione, riassunti, ecc.)
 └── README.md
 ```

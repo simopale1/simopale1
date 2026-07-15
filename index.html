@@ -59,7 +59,7 @@
         </div>
       </div>
 
-      <!-- Seconda riga: cattura audio della call (anche con le cuffie, senza cavi) -->
+      <!-- Seconda riga: funzioni avanzate (audio call + traduzione, tutto in locale) -->
       <div class="panel-subtoolbar">
         <button id="btn-call" class="btn btn-call" title="Cattura l'audio della call e trascrivilo in locale con Whisper">
           🔊 Trascrivi audio call
@@ -72,7 +72,19 @@
             <option value="Xenova/whisper-small">Small — preciso</option>
           </select>
         </label>
+        <label class="field">
+          <span class="field-label">🌐 Traduci in</span>
+          <select id="translate-select">
+            <option value="" selected>— Nessuna —</option>
+            <option value="it">🇮🇹 Italiano</option>
+            <option value="en">🇬🇧 English</option>
+            <option value="es">🇪🇸 Español</option>
+            <option value="fr">🇫🇷 Français</option>
+            <option value="de">🇩🇪 Deutsch</option>
+          </select>
+        </label>
         <span id="call-status" class="call-status hidden"></span>
+        <span id="translate-status" class="call-status hidden"></span>
         <span class="subtoolbar-hint">Per le cuffie: condividi la scheda della call e attiva <b>“Condividi audio scheda”</b>.</span>
       </div>
 
