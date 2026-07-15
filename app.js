@@ -24,6 +24,11 @@
     callStatus: $("call-status"),
     translateSelect: $("translate-select"),
     translateStatus: $("translate-status"),
+    diarize: $("diarize"),
+    speakerStatus: $("speaker-status"),
+    speakersSection: $("speakers-section"),
+    speakers: $("speakers"),
+    diarSensitivity: $("diar-sensitivity"),
     btnHighlight: $("btn-highlight"),
     btnCopy: $("btn-copy"),
     btnExportMd: $("btn-export-md"),
@@ -212,7 +217,7 @@
         workerLoading = false;
         setCallStatus("Ascolto audio call…", "active");
       } else if (msg.type === "result") {
-        handleCallResult(msg.text);
+        handleCallResult(msg.text, msg.id);
       } else if (msg.type === "error") {
         console.error("Whisper error:", msg.error);
         if (workerLoading) {
@@ -226,13 +231,24 @@
     };
   }
 
-  function handleCallResult(text) {
+  function handleCallResult(text, uid) {
     const clean = (text || "").trim();
-    if (!clean) return;
-    const lower = clean.toLowerCase();
-    if (HALLUCINATIONS.has(lower)) return;
-    if (clean.replace(/[^\p{L}\p{N}]/gu, "").length < 2) return; // solo punteggiatura
-    addSegment(clean, "call");
+    const valid = clean &&
+      !HALLUCINATIONS.has(clean.toLowerCase()) &&
+      clean.replace(/[^\p{L}\p{N}]/gu, "").length >= 2; // non solo punteggiatura
+    if (!valid) { if (uid != null) callPending.delete(uid); return; }
+
+    const index = addSegment(clean, "call");
+    if (uid != null) {
+      const pend = callPending.get(uid);
+      if (pend) {
+        pend.index = index;
+        if (pend.speaker != null) {
+          applySpeakerToSegment(index, pend.speaker);
+          callPending.delete(uid);
+        }
+      }
+    }
   }
 
   async function startCall() {
@@ -314,6 +330,7 @@
     processor.connect(zeroGain);
     zeroGain.connect(audioCtx.destination);
 
+    ensureDiarization();
     ensureSession();
   }
 
@@ -332,8 +349,15 @@
     let offset = 0;
     for (const c of chunks) { audio.set(c, offset); offset += c.length; }
 
+    const uid = ++segId;
+    // Diarizzazione: invia una COPIA dell'audio al modello voci (prima del transfer).
+    if (diarizeEnabled && speakerWorker && speakerReady) {
+      const copy = Float32Array.from(audio);
+      callPending.set(uid, {});
+      speakerWorker.postMessage({ type: "embed", id: uid, audio: copy }, [copy.buffer]);
+    }
     worker.postMessage(
-      { type: "transcribe", audio, language: whisperLanguage(), id: ++segId },
+      { type: "transcribe", audio, language: whisperLanguage(), id: uid },
       [audio.buffer]
     );
   }
@@ -358,6 +382,7 @@
     utterance = [];
     utteranceMs = silenceMs = 0;
     speaking = false;
+    callPending.clear();
   }
 
   function computeRMS(buffer) {
@@ -500,6 +525,284 @@
   }
 
   // ============================================================
+  // DIARIZZAZIONE — distinzione dei relatori (impronta vocale locale)
+  // ============================================================
+  const SPEAKER_MODEL = "Xenova/wavlm-base-plus-sv";
+  const SPEAKER_COLORS = [
+    "#e5484d", "#4f46e5", "#2f9e44", "#f5a623", "#e93d82",
+    "#0ea5e9", "#8b5cf6", "#14b8a6", "#f97316", "#64748b",
+  ];
+
+  let diarizeEnabled = false;
+  let speakerWorker = null;
+  let speakerReady = false;
+  let speakerLoading = false;
+  let diarThreshold = 0.5;
+  /** @type {{id:number,name:string,color:string,centroid:Float32Array|null,count:number}[]} */
+  let speakers = [];
+  let nextSpeakerId = 1;
+  const callPending = new Map(); // uid → { index?, speaker? }
+
+  function speakerById(id) { return speakers.find((s) => s.id === id) || null; }
+
+  function cosine(a, b) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
+  }
+
+  function createSpeaker(centroid) {
+    const id = nextSpeakerId++;
+    const color = SPEAKER_COLORS[(id - 1) % SPEAKER_COLORS.length];
+    // nEmb = numero di impronte nel centroide; count = interventi mostrati.
+    speakers.push({
+      id, name: "Relatore " + id, color,
+      centroid: centroid || null, nEmb: centroid ? 1 : 0, count: 0,
+    });
+    return id;
+  }
+
+  // Clustering online: confronta con i centroidi esistenti, altrimenti nuovo relatore.
+  function assignSpeaker(embedding) {
+    const emb = Float32Array.from(embedding);
+    let best = -1, bestSim = -1;
+    speakers.forEach((sp, idx) => {
+      if (!sp.centroid) return;
+      const sim = cosine(emb, sp.centroid);
+      if (sim > bestSim) { bestSim = sim; best = idx; }
+    });
+    if (best >= 0 && bestSim >= diarThreshold) {
+      const sp = speakers[best];
+      const n = sp.nEmb || 1;
+      for (let i = 0; i < sp.centroid.length; i++) {
+        sp.centroid[i] = (sp.centroid[i] * n + emb[i]) / (n + 1);
+      }
+      sp.nEmb = n + 1;
+      return sp.id;
+    }
+    return createSpeaker(emb);
+  }
+
+  function initSpeakerWorker() {
+    if (speakerWorker) return;
+    speakerWorker = new Worker("speaker-worker.js", { type: "module" });
+    speakerWorker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "progress") {
+        if (msg.data && msg.data.status === "progress" && msg.data.progress != null) {
+          setSpeakerStatus(`Caricamento voci… ${Math.round(msg.data.progress)}%`, "loading");
+        }
+      } else if (msg.type === "ready") {
+        speakerReady = true;
+        speakerLoading = false;
+        setSpeakerStatus("👥 Distinzione relatori attiva", "active");
+      } else if (msg.type === "result") {
+        const sid = assignSpeaker(msg.embedding);
+        const pend = callPending.get(msg.id);
+        if (pend) {
+          pend.speaker = sid;
+          if (pend.index != null) {
+            applySpeakerToSegment(pend.index, sid);
+            callPending.delete(msg.id);
+          }
+        }
+        renderSpeakers();
+      } else if (msg.type === "error") {
+        console.error("Speaker error:", msg.error);
+        if (speakerLoading) {
+          speakerLoading = false;
+          setSpeakerStatus("Modello voci non disponibile.", "error");
+          toast("Impossibile caricare il modello per i relatori.");
+        }
+      }
+    };
+  }
+
+  function ensureDiarization() {
+    if (!diarizeEnabled || !callActive) return;
+    if (speakerReady) { setSpeakerStatus("👥 Distinzione relatori attiva", "active"); return; }
+    if (speakerLoading) return;
+    initSpeakerWorker();
+    speakerLoading = true;
+    setSpeakerStatus("Preparazione modello voci…", "loading");
+    speakerWorker.postMessage({ type: "load", model: SPEAKER_MODEL });
+  }
+
+  function applySpeakerToSegment(index, sid) {
+    const seg = segments[index];
+    if (!seg) return;
+    const sp = speakerById(sid);
+    if (sp) sp.count++;
+    seg.speaker = sid;
+    const node = el.transcript.querySelector(`.segment[data-index="${index}"]`);
+    if (node) renderSegmentBadge(node, seg, index);
+    renderSpeakers();
+    persist();
+  }
+
+  function reassignSegment(index, sid) {
+    const seg = segments[index];
+    if (!seg) return;
+    const prev = speakerById(seg.speaker);
+    if (prev) prev.count = Math.max(0, prev.count - 1);
+    const next = speakerById(sid);
+    if (next) next.count++;
+    seg.speaker = sid;
+    const node = el.transcript.querySelector(`.segment[data-index="${index}"]`);
+    if (node) renderSegmentBadge(node, seg, index);
+    renderSpeakers();
+    persist();
+  }
+
+  function renameSpeaker(id) {
+    const sp = speakerById(id);
+    if (!sp) return;
+    const name = prompt("Nome del relatore:", sp.name);
+    if (name && name.trim()) {
+      sp.name = name.trim();
+      renderSpeakers();
+      refreshCallBadges();
+      persist();
+    }
+  }
+
+  function mergeSpeakers(fromId, toId) {
+    if (fromId === toId) return;
+    const from = speakerById(fromId), to = speakerById(toId);
+    if (!from || !to) return;
+    segments.forEach((s) => { if (s.speaker === fromId) s.speaker = toId; });
+    to.count += from.count;
+    speakers = speakers.filter((s) => s.id !== fromId);
+    renderSpeakers();
+    refreshCallBadges();
+    persist();
+    toast(`Uniti in “${to.name}”`);
+  }
+
+  function refreshCallBadges() {
+    segments.forEach((s, i) => {
+      if (s.source !== "call") return;
+      const node = el.transcript.querySelector(`.segment[data-index="${i}"]`);
+      if (node) renderSegmentBadge(node, s, i);
+    });
+  }
+
+  // Badge di un segmento: per la call mostra il relatore (cliccabile per riassegnare).
+  function renderSegmentBadge(node, seg, index) {
+    const badge = node.querySelector(".src-badge");
+    if (!badge) return;
+    badge.className = "src-badge";
+    badge.style.color = "";
+    badge.style.borderColor = "";
+    badge.onclick = null;
+    badge.style.cursor = "";
+    badge.removeAttribute("title");
+
+    if (seg.source === "call" && seg.speaker != null) {
+      const sp = speakerById(seg.speaker);
+      badge.textContent = "🔊 " + (sp ? sp.name : "Relatore");
+      badge.classList.add("speaker-badge");
+      if (sp) { badge.style.color = sp.color; badge.style.borderColor = sp.color; }
+      badge.style.cursor = "pointer";
+      badge.title = "Clicca per riassegnare il relatore";
+      badge.onclick = (e) => { e.stopPropagation(); openSpeakerMenu(index, badge); };
+    } else {
+      badge.textContent = SOURCE_LABEL[seg.source] || "";
+    }
+  }
+
+  function renderSpeakers() {
+    el.speakersSection.classList.toggle("hidden", !diarizeEnabled && speakers.length === 0);
+    el.speakers.innerHTML = "";
+    if (speakers.length === 0) {
+      el.speakers.innerHTML = '<li class="muted">Nessun relatore ancora: compariranno qui appena qualcuno parla nella call.</li>';
+      return;
+    }
+    speakers.forEach((sp) => {
+      const li = document.createElement("li");
+      li.className = "speaker-item";
+      const dot = document.createElement("span");
+      dot.className = "speaker-dot";
+      dot.style.background = sp.color;
+      const name = document.createElement("span");
+      name.className = "speaker-name";
+      name.textContent = sp.name;
+      const count = document.createElement("span");
+      count.className = "speaker-count";
+      count.textContent = sp.count;
+      const rename = document.createElement("button");
+      rename.className = "spk-btn";
+      rename.textContent = "✏️";
+      rename.title = "Rinomina";
+      rename.onclick = () => renameSpeaker(sp.id);
+      const merge = document.createElement("button");
+      merge.className = "spk-btn";
+      merge.textContent = "⧉";
+      merge.title = "Unisci in un altro relatore";
+      merge.onclick = (e) => openMergeMenu(sp.id, e.currentTarget);
+      li.append(dot, name, count, rename, merge);
+      el.speakers.appendChild(li);
+    });
+  }
+
+  // --- Popover di scelta relatore (riassegna / unisci) ---
+  let openMenuEl = null;
+  function closeMenus() {
+    if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; }
+    document.removeEventListener("click", closeMenus);
+  }
+  function buildSpeakerMenu(items, addNew) {
+    closeMenus();
+    const menu = document.createElement("div");
+    menu.className = "speaker-menu";
+    items.forEach(({ sp, onClick }) => {
+      const b = document.createElement("button");
+      const dot = document.createElement("span");
+      dot.className = "speaker-dot";
+      dot.style.background = sp.color;
+      const label = document.createElement("span");
+      label.textContent = sp.name;
+      b.append(dot, label);
+      b.onclick = (e) => { e.stopPropagation(); onClick(); closeMenus(); };
+      menu.appendChild(b);
+    });
+    if (addNew) {
+      const b = document.createElement("button");
+      b.textContent = "➕ Nuovo relatore";
+      b.onclick = (e) => { e.stopPropagation(); addNew(); closeMenus(); };
+      menu.appendChild(b);
+    }
+    return menu;
+  }
+  function placeMenu(menu, anchor) {
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    menu.style.top = (window.scrollY + r.bottom + 4) + "px";
+    menu.style.left = (window.scrollX + r.left) + "px";
+    openMenuEl = menu;
+    setTimeout(() => document.addEventListener("click", closeMenus), 0);
+  }
+  function openSpeakerMenu(index, anchor) {
+    const items = speakers.map((sp) => ({ sp, onClick: () => reassignSegment(index, sp.id) }));
+    const menu = buildSpeakerMenu(items, () => {
+      const id = createSpeaker();
+      reassignSegment(index, id);
+    });
+    placeMenu(menu, anchor);
+  }
+  function openMergeMenu(fromId, anchor) {
+    const items = speakers.filter((s) => s.id !== fromId)
+      .map((sp) => ({ sp, onClick: () => mergeSpeakers(fromId, sp.id) }));
+    if (items.length === 0) { toast("Serve almeno un altro relatore per unire."); return; }
+    placeMenu(buildSpeakerMenu(items, null), anchor);
+  }
+
+  function setSpeakerStatus(text, cls) {
+    el.speakerStatus.textContent = text;
+    el.speakerStatus.className = "call-status" + (cls ? " " + cls : "") + (text ? "" : " hidden");
+  }
+
+  // ============================================================
   // SESSIONE / TIMER
   // ============================================================
   function ensureSession() {
@@ -559,10 +862,12 @@
   function addSegment(text, source) {
     const seg = { time: sessionSeconds(), text, highlight: false, source: source || "mic" };
     segments.push(seg);
-    renderSegment(seg, segments.length - 1);
+    const index = segments.length - 1;
+    renderSegment(seg, index);
     updateStats();
     persist();
-    requestTranslation(segments.length - 1);
+    requestTranslation(index);
+    return index;
   }
 
   function renderSegment(seg, index) {
@@ -571,10 +876,11 @@
     div.className = "segment src-" + (seg.source || "mic") + (seg.highlight ? " is-highlight" : "");
     div.dataset.index = index;
     div.innerHTML =
-      `<div class="segment-meta"><span class="src-badge">${SOURCE_LABEL[seg.source] || ""}</span>` +
+      `<div class="segment-meta"><span class="src-badge"></span>` +
       `<span class="segment-time">${formatDuration(seg.time)}</span></div>` +
       `<div class="segment-text"></div>`;
     div.querySelector(".segment-text").textContent = seg.text;
+    renderSegmentBadge(div, seg, index);
     if (seg.translation) {
       const t = document.createElement("div");
       t.className = "segment-translation";
@@ -639,6 +945,14 @@
   // ============================================================
   // ESPORTAZIONE
   // ============================================================
+  function exportSpeakerLabel(seg) {
+    if (seg.source === "call" && seg.speaker != null) {
+      const sp = speakerById(seg.speaker);
+      return "🔊 " + (sp ? sp.name : "Relatore");
+    }
+    return SOURCE_LABEL[seg.source] || "";
+  }
+
   function buildPlainText() {
     const lines = [];
     lines.push("CallScribe — Trascrizione");
@@ -648,7 +962,7 @@
     lines.push("");
     lines.push("=== TRASCRIZIONE ===");
     segments.forEach((s) => {
-      const src = SOURCE_LABEL[s.source] || "";
+      const src = exportSpeakerLabel(s);
       lines.push(`[${formatDuration(s.time)}] ${src}${s.highlight ? " ⭐" : ""}: ${s.text}`);
       if (s.translation) lines.push(`            🌐 ${s.translation}`);
     });
@@ -678,7 +992,7 @@
     }
     lines.push("## 💬 Trascrizione\n");
     segments.forEach((s) => {
-      const src = SOURCE_LABEL[s.source] || "";
+      const src = exportSpeakerLabel(s);
       const mark = s.highlight ? " ⭐" : "";
       lines.push(`**\`${formatDuration(s.time)}\` ${src}**${mark}: ${s.text}`);
       if (s.translation) lines.push(`> 🌐 ${s.translation}`);
@@ -718,6 +1032,13 @@
         elapsed: el.timer.textContent,
         lang: el.langSelect.value,
         translate: el.translateSelect.value,
+        diarize: diarizeEnabled,
+        diarThreshold,
+        nextSpeakerId,
+        speakers: speakers.map((s) => ({
+          id: s.id, name: s.name, color: s.color, count: s.count, nEmb: s.nEmb || 0,
+          centroid: s.centroid ? Array.from(s.centroid) : null,
+        })),
         savedAt: Date.now(),
       }));
     } catch (_) {}
@@ -734,10 +1055,29 @@
     elapsedBase = parseDuration(el.timer.textContent);
     if (data.lang) el.langSelect.value = data.lang;
     if (data.translate) el.translateSelect.value = data.translate;
+
+    // Relatori (prima di renderizzare i segmenti, così i badge si risolvono).
+    if (Array.isArray(data.speakers)) {
+      speakers = data.speakers.map((s) => ({
+        id: s.id, name: s.name, color: s.color, count: s.count || 0, nEmb: s.nEmb || 0,
+        centroid: s.centroid ? Float32Array.from(s.centroid) : null,
+      }));
+    }
+    if (data.nextSpeakerId) nextSpeakerId = data.nextSpeakerId;
+    if (typeof data.diarThreshold === "number") {
+      diarThreshold = data.diarThreshold;
+      el.diarSensitivity.value = String(diarThreshold);
+    }
+    if (data.diarize) {
+      diarizeEnabled = true;
+      el.diarize.checked = true;
+    }
+
     startTime = Date.now();
     if (el.emptyState) { el.emptyState.remove(); el.emptyState = null; }
     segments.forEach((s, i) => renderSegment(s, i));
     renderHighlights();
+    renderSpeakers();
     updateStats();
     if (el.translateSelect.value) setupTranslation(false);
     toast("Sessione precedente ripristinata");
@@ -749,8 +1089,13 @@
     stopCall();
     segments = [];
     highlights = [];
+    speakers = [];
+    nextSpeakerId = 1;
+    callPending.clear();
     startTime = null;
     setTranslateStatus("", "");
+    setSpeakerStatus("", "");
+    renderSpeakers();
     elapsedBase = 0;
     el.notes.value = "";
     el.timer.textContent = "00:00";
@@ -879,6 +1224,23 @@
       setupTranslation(true);
       persist();
     });
+
+    el.diarize.addEventListener("change", () => {
+      diarizeEnabled = el.diarize.checked;
+      renderSpeakers();
+      if (diarizeEnabled) {
+        ensureDiarization();
+        if (!callActive) toast("Attiva “Trascrivi audio call” per distinguere i relatori.");
+      } else {
+        setSpeakerStatus("", "");
+      }
+      persist();
+    });
+
+    el.diarSensitivity.addEventListener("input", () => {
+      diarThreshold = parseFloat(el.diarSensitivity.value);
+    });
+    el.diarSensitivity.addEventListener("change", persist);
 
     document.addEventListener("keydown", (e) => {
       if (e.target === el.notes) return;

@@ -8,15 +8,18 @@ Idee e prossimi passi per far crescere CallScribe.
   degli altri anche con le cuffie, senza cavi virtuali e senza chiavi API
 - **Traduzione in tempo reale in locale** (opus-mt): call in un'altra lingua
   mostrata anche nella tua, sotto ogni frase
+- **Distinzione dei relatori** (WavLM): raggruppa le voci in Relatore 1, 2, 3…
+  con correzione manuale (rinomina, riassegna, unisci)
 - VAD (voice activity detection) per segmentare gli interventi
 - Momenti chiave, appunti, timer, statistiche
 - Esportazione `.md` / `.txt` (con etichetta sorgente), copia, salvataggio locale
 - Tema chiaro/scuro, scorciatoie da tastiera
 
 ## 🔜 Prossimo
+- [ ] **Riassunto automatico + action items** a fine call.
 - [ ] **Modello 100% offline**: includere i pesi del modello (o cache-first PWA)
       per non dipendere dalla CDN.
-- [ ] **Diarizzazione**: distinguere più interlocutori sul lato "call".
+- [ ] **Diarizzazione più robusta**: gestire meglio il parlato sovrapposto.
 - [ ] **Backend opzionale** (Whisper/Deepgram lato server) per dispositivi deboli.
 - [ ] **Riassunto automatico** e action items via LLM a fine call.
 - [ ] **Ricerca** nella trascrizione.

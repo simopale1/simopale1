@@ -20,6 +20,9 @@ appunti ed esportazione in `.txt` / `.md`.
 - **🌐 Traduzione in tempo reale** (locale): traduci la call — es. una riunione
   in **inglese** mostrata anche in **italiano** sotto ogni frase — senza chiavi
   né server (modelli Helsinki-NLP *opus-mt*)
+- **👥 Distinzione dei relatori** (locale, sperimentale): raggruppa le voci della
+  call in *Relatore 1, 2, 3…* tramite impronta vocale (WavLM), con correzione
+  manuale — rinomina, riassegna un intervento, unisci due relatori
 - **Multilingua**: Italiano, Inglese (US/UK), Spagnolo, Francese, Tedesco
 - **Riavvio automatico** dopo pause e silenzi (la call non si "perde")
 - **⭐ Momenti chiave**: segna al volo i punti importanti (tasto `M`)
@@ -105,6 +108,30 @@ dispositivo. Le traduzioni sono incluse anche nei file esportati.
 
 ---
 
+## 👥 Distinzione dei relatori (sperimentale)
+
+Per sapere *chi* ha detto cosa nella call:
+
+1. Attiva **🔊 Trascrivi audio call**.
+2. Spunta **👥 Distingui relatori** (si scarica una volta un modello di ~80–100 MB).
+3. Le voci vengono raggruppate automaticamente in **Relatore 1, 2, 3…**, ognuno
+   con un colore. Ogni intervento mostra il badge del relatore.
+
+### Correggere gli errori
+
+Il riconoscimento vocale è approssimativo (voci simili o parlato sovrapposto
+possono confondersi). Nel pannello **Relatori** e sui badge puoi:
+
+- ✏️ **Rinominare** un relatore (es. *Relatore 1* → *John*)
+- 🔊 **Riassegnare** un intervento → clicca il suo badge e scegli il relatore giusto
+- ⧉ **Unire** due relatori che sono la stessa persona
+- Regolare lo slider **Separazione**: più a destra = più relatori distinti
+
+> ⚠️ **Sperimentale:** funziona meglio quando le persone parlano una alla volta.
+> I nomi/colori dei relatori sono inclusi anche nei file esportati.
+
+---
+
 ## 🗂️ Struttura del progetto
 
 ```
@@ -114,7 +141,8 @@ dispositivo. Le traduzioni sono incluse anche nei file esportati.
 ├── app.js              # logica: sorgenti audio, VAD, traduzione, esport, storage
 ├── whisper-worker.js   # Web Worker: Whisper locale (transformers.js) per l'audio call
 ├── translate-worker.js # Web Worker: traduzione locale (opus-mt) in tempo reale
-├── ROADMAP.md          # prossimi passi (diarizzazione, riassunti, ecc.)
+├── speaker-worker.js   # Web Worker: impronta vocale (WavLM) per distinguere i relatori
+├── ROADMAP.md          # prossimi passi (riassunti, ecc.)
 └── README.md
 ```
 

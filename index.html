@@ -83,8 +83,13 @@
             <option value="de">🇩🇪 Deutsch</option>
           </select>
         </label>
+        <label class="check-field" title="Raggruppa automaticamente le voci in Relatore 1, 2, 3…">
+          <input type="checkbox" id="diarize" />
+          <span>👥 Distingui relatori</span>
+        </label>
         <span id="call-status" class="call-status hidden"></span>
         <span id="translate-status" class="call-status hidden"></span>
+        <span id="speaker-status" class="call-status hidden"></span>
         <span class="subtoolbar-hint">Per le cuffie: condividi la scheda della call e attiva <b>“Condividi audio scheda”</b>.</span>
       </div>
 
@@ -111,8 +116,19 @@
       </div>
     </section>
 
-    <!-- Sidebar: momenti chiave e note -->
+    <!-- Sidebar: relatori, momenti chiave e note -->
     <aside class="panel side-panel">
+      <div class="side-section speakers-section hidden" id="speakers-section">
+        <div class="side-header">
+          <h2>👥 Relatori</h2>
+          <label class="sens-field" title="Più a destra = separa di più le voci (più relatori)">
+            <span>Separazione</span>
+            <input type="range" id="diar-sensitivity" min="0.30" max="0.70" step="0.02" value="0.50" />
+          </label>
+        </div>
+        <ul id="speakers" class="speakers"></ul>
+      </div>
+
       <div class="side-section">
         <div class="side-header">
           <h2>⭐ Momenti chiave</h2>
