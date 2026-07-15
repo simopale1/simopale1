@@ -1,0 +1,21 @@
+# Dipendenze (per futuro backend)
+node_modules/
+dist/
+build/
+
+# Ambiente
+.env
+.env.local
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Log
+*.log
+npm-debug.log*

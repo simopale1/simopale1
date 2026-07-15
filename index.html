@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Trascrizione in tempo reale delle call su Teams, in italiano e inglese. Prendi appunti senza perdere le cose importanti." />
+  <title>CallScribe — Trascrizione live delle call</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-icon" aria-hidden="true">🎙️</span>
+      <div>
+        <h1>CallScribe</h1>
+        <p class="tagline">Trascrizione live delle call &middot; IT / EN</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="status-pill" class="status-pill idle" role="status" aria-live="polite">
+        <span class="dot"></span><span id="status-text">Pronto</span>
+      </span>
+      <button id="theme-toggle" class="icon-btn" title="Cambia tema" aria-label="Cambia tema">🌓</button>
+    </div>
+  </header>
+
+  <!-- Browser non supportato -->
+  <div id="unsupported" class="banner banner-error hidden">
+    <strong>Browser non supportato.</strong>
+    Questo browser non offre la Web Speech API. Usa <b>Google Chrome</b> o <b>Microsoft Edge</b> aggiornati.
+  </div>
+
+  <main class="layout">
+    <!-- Colonna principale: trascrizione -->
+    <section class="panel transcript-panel">
+      <div class="panel-toolbar">
+        <div class="control-group">
+          <button id="btn-start" class="btn btn-primary">
+            <span class="btn-icon">●</span> Avvia
+          </button>
+          <button id="btn-pause" class="btn btn-secondary" disabled>Pausa</button>
+          <button id="btn-stop" class="btn btn-danger" disabled>Stop</button>
+        </div>
+
+        <div class="control-group">
+          <label class="field">
+            <span class="field-label">Lingua</span>
+            <select id="lang-select">
+              <option value="it-IT">🇮🇹 Italiano</option>
+              <option value="en-US">🇬🇧 English (US)</option>
+              <option value="en-GB">🇬🇧 English (UK)</option>
+              <option value="es-ES">🇪🇸 Español</option>
+              <option value="fr-FR">🇫🇷 Français</option>
+              <option value="de-DE">🇩🇪 Deutsch</option>
+            </select>
+          </label>
+          <div class="timer" id="timer" title="Durata sessione">00:00</div>
+        </div>
+      </div>
+
+      <div class="transcript-wrap">
+        <div id="transcript" class="transcript" aria-live="polite" aria-label="Trascrizione">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-icon">💬</div>
+            <p>Premi <b>Avvia</b> e concedi l'accesso al microfono per iniziare a trascrivere.</p>
+            <p class="hint">Suggerimento: metti la call in <b>vivavoce/altoparlanti</b> per catturare anche l'altra persona.</p>
+          </div>
+        </div>
+        <div id="interim" class="interim" aria-live="assertive"></div>
+      </div>
+
+      <div class="panel-footer">
+        <span class="stat" id="word-count">0 parole</span>
+        <span class="stat" id="segment-count">0 interventi</span>
+        <label class="switch-field">
+          <input type="checkbox" id="autoscroll" checked />
+          <span>Scorrimento automatico</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Sidebar: momenti chiave e note -->
+    <aside class="panel side-panel">
+      <div class="side-section">
+        <div class="side-header">
+          <h2>⭐ Momenti chiave</h2>
+          <button id="btn-highlight" class="btn btn-small" disabled title="Segna il momento attuale come importante">+ Segna</button>
+        </div>
+        <ul id="highlights" class="highlights">
+          <li class="muted">Nessun momento segnato. Durante la call premi <b>“+ Segna”</b> per marcare i punti importanti.</li>
+        </ul>
+      </div>
+
+      <div class="side-section notes-section">
+        <div class="side-header">
+          <h2>📝 Appunti</h2>
+        </div>
+        <textarea id="notes" class="notes" placeholder="Scrivi qui i tuoi appunti, azioni da fare, decisioni prese..."></textarea>
+      </div>
+
+      <div class="side-section">
+        <div class="side-header"><h2>⬇️ Esporta</h2></div>
+        <div class="export-buttons">
+          <button id="btn-copy" class="btn btn-secondary btn-block">Copia tutto</button>
+          <button id="btn-export-md" class="btn btn-secondary btn-block">Scarica .md</button>
+          <button id="btn-export-txt" class="btn btn-secondary btn-block">Scarica .txt</button>
+          <button id="btn-clear" class="btn btn-ghost btn-block">Cancella sessione</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast hidden" role="alert"></div>
+
+  <footer class="app-footer">
+    <p>Tutto avviene <b>localmente nel tuo browser</b>. La trascrizione usa la Web Speech API — durante l'uso l'audio del microfono può essere elaborato dai servizi del browser.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
